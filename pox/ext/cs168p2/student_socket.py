@@ -583,11 +583,20 @@ class StudentUSocket(StudentUSocketBase):
                         CLOSE_WAIT, CLOSING, LAST_ACK, TIME_WAIT):
       if self.acceptable_seg(seg, payload):
         # Complete for Stage 2
-        if self.rcv.nxt == seg.seq:
-            self.handle_accepted_seg(seg, payload)
-        else:
-            self.set_pending_ack()
+        # if self.rcv.nxt == seg.seq:
+        #     self.handle_accepted_seg(seg, payload)
+        # else:
+        #     self.set_pending_ack()
         # Complete for Stage 3
+        self.rx_queue.push(p)
+        smallest = self.rx_queue.peek()
+        if smallest[0] | GT | self.rcv.nxt:
+            self.set_pending_ack()
+        else:
+            while (not self.rx_queue.empty()) and self.rx_queue.peek()[0] | LE | self.rcv.nxt:
+                packet = self.rx_queue.pop()
+                # data = packet.app[self.rcv.nxt |MINUS| packet.tcp.seq:]
+                self.handle_accepted_seg(packet[1].tcp, packet[1].app)
       else:
         self.set_pending_ack()
 
