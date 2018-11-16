@@ -561,11 +561,14 @@ class StudentUSocket(StudentUSocketBase):
         # Complete for Stage 8
 
         if (p.tcp.SYN or p.tcp.FIN or p.tcp.payload) and not retxed:
-            pass
+            p.tcp.tx_ts = self.stack.now
+            self.retx_queue.push(p)
 
         # Complete for Stage 4
-        self.snd.nxt = self.snd.nxt | PLUS | len(p.tcp.payload)
+        if not p.retxed:
+            self.snd.nxt = self.snd.nxt | PLUS | len(p.tcp.payload)
         self.manager.tx(p)
+
 
     def rx(self, p):
         """
@@ -608,7 +611,6 @@ class StudentUSocket(StudentUSocketBase):
                         self.handle_accepted_seg(packet[1].tcp, packet[1].app)
             else:
                 self.set_pending_ack()
-
 
         self.maybe_send()
 
@@ -657,7 +659,8 @@ class StudentUSocket(StudentUSocketBase):
         Updates the rto based on rfc 6298.
         """
         # Complete for Stage 9
-        pass
+        # if not acked_pkt.retxed:
+        #     self.rto = self.srtt + max(self.G, self.K*self.rttvar)
 
     def handle_accepted_payload(self, payload):
         """
@@ -702,7 +705,7 @@ class StudentUSocket(StudentUSocketBase):
         self.snd.una = seg.ack
 
         # Complete Stage 8
-
+        self.retx_queue.pop_upto(seg.ack)
         # Complete Stage 9
 
         for (ackno, p) in acked_pkts:
@@ -732,6 +735,9 @@ class StudentUSocket(StudentUSocketBase):
                 self.state = TIME_WAIT
             else:
                 self.state = CLOSING
+        elif self.state is FIN_WAIT_2:
+            self.state = TIME_WAIT
+
     def check_ack(self, seg):
         """
         seg is a TCP segment
@@ -866,12 +872,19 @@ class StudentUSocket(StudentUSocketBase):
         """
         # Complete for Stage 8
 
-        time_in_queue = 0
-        if time_in_queue > self.rto:
-            self.log.debug("earliest packet seqno={0} rto={1} being rtxed".format(p.tcp.seq, self.rto))
-            self.tx(p, retxed=True)
+        if self.retx_queue.get_earliest_pkt():
+            p = self.retx_queue.get_earliest_pkt()[1]
+            time_in_queue = self.stack.now - p.tcp.tx_ts
+            if time_in_queue >= self.rto:
+                self.log.debug("earliest packet seqno={0} rto={1} being rtxed".format(p.tcp.seq, self.rto))
+                self.tx(p, retxed=True)
 
-            # Complete for Stage 9
+                # Complete for Stage 9
+                # if self.rto*2 > self.MAX_RTO:
+                #     self.rto = self.MAX_RTO
+                # else:
+                #     self.rto *= 2
+
 
     def set_pending_ack(self):
         """
