@@ -484,12 +484,12 @@ class StudentUSocket(StudentUSocketBase):
             self._delete_tcb()
         elif self.state is ESTABLISHED:
             # Complete for Stage 7
-            pass
+            self.fin_ctrl.set_pending(FIN_WAIT_1)
         elif self.state in (FIN_WAIT_1, FIN_WAIT_2):
             raise RuntimeError("close() is invalid in FIN_WAIT states")
         elif self.state is CLOSE_WAIT:
             # Complete for Stage 6
-            pass
+            self.fin_ctrl.set_pending(LAST_ACK)
         elif self.state in (CLOSING, LAST_ACK, TIME_WAIT):
             raise RuntimeError("connecting closing")
         else:
@@ -609,8 +609,6 @@ class StudentUSocket(StudentUSocketBase):
             else:
                 self.set_pending_ack()
 
-        # Complete for Stage 3 (check recv queue)
-        # data = packet.app[self.rcv.nxt |MINUS| packet.tcp.seq:]
 
         self.maybe_send()
 
@@ -723,9 +721,17 @@ class StudentUSocket(StudentUSocketBase):
 
         self.log.info("Got FIN!")
         # Complete for Stage 6
-
+        self.rcv.nxt = seg.seq | PLUS | 1
+        self.set_pending_ack()
+        if self.state is ESTABLISHED:
+            self.state = CLOSE_WAIT
         # Complete for Stage 7
-
+        elif self.state is FIN_WAIT_1:
+            # A
+            if self.fin_ctrl.acks_our_fin(seg.ack):
+                self.state = TIME_WAIT
+            else:
+                self.state = CLOSING
     def check_ack(self, seg):
         """
         seg is a TCP segment
@@ -757,14 +763,19 @@ class StudentUSocket(StudentUSocketBase):
         # Complete for Stage 6
         # Complete for Stage 7
         if self.state == FIN_WAIT_1:
-            pass
+            if self.fin_ctrl.acks_our_fin(seg.ack):
+                self.state = FIN_WAIT_2
         elif self.state == FIN_WAIT_2:
             if self.retx_queue.empty():
                 self.set_pending_ack()
+            if seg.FIN:
+                self.start_timer_timewait()
         elif self.state == CLOSING:
-            pass
+            if self.fin_ctrl.acks_our_fin(seg.ack):
+                self.start_timer_timewait()
         elif self.state == LAST_ACK:
-            pass
+            if self.fin_ctrl.acks_our_fin(seg.ack):
+                self._delete_tcb()
         elif self.state == TIME_WAIT:
             # restart the 2 msl timeout
             self.set_pending_ack()
