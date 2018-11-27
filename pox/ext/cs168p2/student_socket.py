@@ -431,6 +431,7 @@ class StudentUSocket(StudentUSocketBase):
     beta = 1.0 / 4
     K = 4
     G = 0  # clock granularity
+    initRtt = True
 
     def __init__(self, manager):
         super(StudentUSocket, self).__init__(manager)
@@ -561,7 +562,7 @@ class StudentUSocket(StudentUSocketBase):
         # Complete for Stage 8
 
         if (p.tcp.SYN or p.tcp.FIN or p.tcp.payload) and not retxed:
-            p.tcp.tx_ts = self.stack.now
+            p.tx_ts = self.stack.now
             self.retx_queue.push(p)
 
         # Complete for Stage 4
@@ -659,8 +660,23 @@ class StudentUSocket(StudentUSocketBase):
         Updates the rto based on rfc 6298.
         """
         # Complete for Stage 9
-        # if not acked_pkt.retxed:
-        #     self.rto = self.srtt + max(self.G, self.K*self.rttvar)
+
+        r = self.stack.now - acked_pkt.tx_ts
+
+        if self.initRtt:
+            self.srtt = r
+            self.rttvar = r / 2
+            self.initRtt = False
+        else:
+            self.rttvar = (1 - self.beta) * self.rttvar \
+                          + self.beta * abs(self.srtt - r)
+            self.srtt = (1 - self.alpha) * self.srtt + self.alpha * r
+
+        self.rto = self.srtt + max(self.G, self.K * self.rttvar)
+        self.rto = min(self.rto, self.MAX_RTO)
+        self.rto = max(self.rto, self.MIN_RTO)
+
+
 
     def handle_accepted_payload(self, payload):
         """
@@ -701,13 +717,11 @@ class StudentUSocket(StudentUSocketBase):
         acceptable_seg()
         """
         # Complete Stage 4
-        acked_pkts = []  # remove when implemented
         self.snd.una = seg.ack
 
         # Complete Stage 8
-        self.retx_queue.pop_upto(seg.ack)
+        acked_pkts = self.retx_queue.pop_upto(seg.ack)
         # Complete Stage 9
-
         for (ackno, p) in acked_pkts:
             if not p.retxed:
                 self.update_rto(p)
@@ -732,11 +746,13 @@ class StudentUSocket(StudentUSocketBase):
         elif self.state is FIN_WAIT_1:
             # A
             if self.fin_ctrl.acks_our_fin(seg.ack):
-                self.state = TIME_WAIT
+                #self.state = TIME_WAIT
+                self.start_timer_timewait()
             else:
                 self.state = CLOSING
         elif self.state is FIN_WAIT_2:
-            self.state = TIME_WAIT
+            # self.state = TIME_WAIT
+            self.start_timer_timewait()
 
     def check_ack(self, seg):
         """
@@ -827,12 +843,11 @@ class StudentUSocket(StudentUSocketBase):
         snd = self.snd
         num_pkts = 0
         bytes_sent = 0
-        # Complete for Stage 4
         remaining = len(self.tx_data)
         p_in_flight = self.snd.nxt | MINUS | self.snd.una
         snd_wnd = self.snd.wnd | MINUS | p_in_flight
 
-        while remaining > 0 and num_pkts | LT | snd_wnd:
+        while remaining > 0 and bytes_sent |LT| snd_wnd:
 
             if self.mss | GE | snd_wnd:
                 payload = self.tx_data[:snd_wnd]
@@ -844,8 +859,8 @@ class StudentUSocket(StudentUSocketBase):
             # create a packet and send it
             p = self.new_packet(data=payload)
             self.tx(p)
-            bytes_sent += len(payload)
-            num_pkts = num_pkts | PLUS | 1
+            bytes_sent = bytes_sent |PLUS| len(payload)
+            num_pkts += 1
             remaining = len(self.tx_data)
 
         self.log.debug("sent {0} packets with {1} bytes total".format(num_pkts, bytes_sent))
@@ -872,18 +887,18 @@ class StudentUSocket(StudentUSocketBase):
         """
         # Complete for Stage 8
 
-        if self.retx_queue.get_earliest_pkt():
-            p = self.retx_queue.get_earliest_pkt()[1]
-            time_in_queue = self.stack.now - p.tcp.tx_ts
+        if not self.retx_queue.empty():
+            (seq, p) = self.retx_queue.get_earliest_pkt()
+            time_in_queue = self.stack.now - p.tx_ts
             if time_in_queue >= self.rto:
                 self.log.debug("earliest packet seqno={0} rto={1} being rtxed".format(p.tcp.seq, self.rto))
                 self.tx(p, retxed=True)
 
                 # Complete for Stage 9
-                # if self.rto*2 > self.MAX_RTO:
-                #     self.rto = self.MAX_RTO
-                # else:
-                #     self.rto *= 2
+                if self.rto*2 > self.MAX_RTO:
+                    self.rto = self.MAX_RTO
+                else:
+                    self.rto *= 2
 
 
     def set_pending_ack(self):
@@ -905,5 +920,5 @@ class StudentUSocket(StudentUSocketBase):
 
 # Project 2 Survey
 def proj2_survey():
-    secret_word = ""
+    secret_word = "udp"
     return secret_word
